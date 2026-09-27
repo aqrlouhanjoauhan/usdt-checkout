@@ -137,7 +137,7 @@ function handleOrderExpiredAndRecreate() {
         fetchOrder(`${API_BASE}/?data=${encodeURIComponent(dataToken)}`, true, currentCacheKey);
     } else if (payParam && !isNaN(parseFloat(payParam)) && parseFloat(payParam) > 0) {
         const amountVal = parseFloat(payParam);
-        fetchOrder(`${API_BASE}/?price=${encodeURIComponent(amountVal)}`, false, null);
+        fetchOrder(`${API_BASE}/?price=${encodeURIComponent(amountVal)}`, false, currentCacheKey);
     }
 }
 
@@ -256,6 +256,7 @@ async function fetchOrder(url, isFromDataToken = false, cacheKey = null) {
             return;
         }
 
+        // 统一把有效订单写入对应的 storage（localStorage 或 sessionStorage）
         if (cacheKey && currentStorage) {
             try {
                 currentStorage.setItem(cacheKey, JSON.stringify(data));
@@ -281,6 +282,11 @@ function submitCustomAmount() {
         inputEl.focus();
         return;
     }
+
+    // 重新输入金额提交时，主动清理旧的 session 缓存，生成全新订单
+    try {
+        sessionStorage.removeItem(`solpay_custom_pay_${val}`);
+    } catch (e) {}
 
     const newUrl = new URL(window.location.origin + window.location.pathname);
     newUrl.searchParams.set('pay', val);
@@ -382,6 +388,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     if (dataToken) {
+        // 密文模式：使用 localStorage 持久存储
         currentStorage = localStorage;
         currentCacheKey = `solpay_token_${dataToken.trim()}`;
         const cachedDataStr = currentStorage.getItem(currentCacheKey);
@@ -391,7 +398,6 @@ window.addEventListener('DOMContentLoaded', () => {
             try {
                 const cachedData = JSON.parse(cachedDataStr);
                 if (cachedData && cachedData.order_id) {
-                    // 有缓存时先请求一次 check，确认有效才显示，失效则拉取新订单
                     validateAndRenderCache(cachedData, fetchUrl, true, currentCacheKey);
                     return;
                 }
@@ -403,10 +409,28 @@ window.addEventListener('DOMContentLoaded', () => {
         fetchOrder(fetchUrl, true, currentCacheKey);
     } 
     else if (payParam && !isNaN(parseFloat(payParam)) && parseFloat(payParam) > 0) {
-        // 自定义金额模式：不使用持久缓存，直接发起请求获取新订单
+        // 🚀 核心修复：自定义金额模式使用 sessionStorage，防止用户 F5 刷新页面时订单号和收款地址丢失突变
         const amountVal = parseFloat(payParam);
         document.getElementById('input-custom-price').value = amountVal;
-        fetchOrder(`${API_BASE}/?price=${encodeURIComponent(amountVal)}`, false, null);
+
+        currentStorage = sessionStorage;
+        currentCacheKey = `solpay_custom_pay_${amountVal}`;
+        const cachedDataStr = currentStorage.getItem(currentCacheKey);
+        const fetchUrl = `${API_BASE}/?price=${encodeURIComponent(amountVal)}`;
+
+        if (cachedDataStr) {
+            try {
+                const cachedData = JSON.parse(cachedDataStr);
+                if (cachedData && cachedData.order_id) {
+                    validateAndRenderCache(cachedData, fetchUrl, false, currentCacheKey);
+                    return;
+                }
+            } catch (e) {
+                currentStorage.removeItem(currentCacheKey);
+            }
+        }
+
+        fetchOrder(fetchUrl, false, currentCacheKey);
     } 
     else {
         switchToCustomMode();
