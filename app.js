@@ -8,7 +8,7 @@ let currentOrderId = "";
 let globalAmount = "";
 let currentProject = "";
 let currentCacheKey = ""; 
-let currentStorage = localStorage; 
+let currentStorage = null; // 正常商品为 localStorage，自定义金额为 sessionStorage
 let pollTimer = null;
 let toastTimer = null;
 let lastRenderedOrderInfo = null;
@@ -129,6 +129,7 @@ ${o.url ? t("copy_header_delivery") + o.url : ""}
 
 function handleOrderExpiredAndRecreate() {
     if (pollTimer) clearInterval(pollTimer);
+    // 服务端确实判定该未付款订单失效时才清除缓存重新生成
     if (currentCacheKey && currentStorage) {
         currentStorage.removeItem(currentCacheKey);
     }
@@ -167,11 +168,23 @@ function startPolling(orderId) {
                 return;
             }
 
+            // 支付成功：更新并锁定缓存，绝不删除缓存
             if (data.success && data.paid) {
                 clearInterval(pollTimer);
+
                 if (currentCacheKey && currentStorage) {
-                    currentStorage.removeItem(currentCacheKey);
+                    try {
+                        const paidCache = {
+                            isPaid: true,
+                            order: data.order,
+                            order_id: data.order.order_id || orderId,
+                            pay_amount: data.order.price || globalAmount,
+                            project: data.order.project || currentProject
+                        };
+                        currentStorage.setItem(currentCacheKey, JSON.stringify(paidCache));
+                    } catch (e) {}
                 }
+
                 const syncEl = document.getElementById('sync-text');
                 syncEl.setAttribute('data-i18n', 'status_tx_confirmed');
                 syncEl.innerText = t("status_tx_confirmed");
@@ -256,7 +269,7 @@ async function fetchOrder(url, isFromDataToken = false, cacheKey = null) {
             return;
         }
 
-        // 统一把有效订单写入对应的 storage（localStorage 或 sessionStorage）
+        // 成功生成订单，写入当前对应的存储
         if (cacheKey && currentStorage) {
             try {
                 currentStorage.setItem(cacheKey, JSON.stringify(data));
@@ -283,7 +296,7 @@ function submitCustomAmount() {
         return;
     }
 
-    // 重新输入金额提交时，主动清理旧的 session 缓存，生成全新订单
+    // 主动输入金额重新生成时，主动清空该金额旧订单
     try {
         sessionStorage.removeItem(`solpay_custom_pay_${val}`);
     } catch (e) {}
@@ -324,16 +337,26 @@ async function searchOrder() {
 }
 
 /**
- * 校验缓存的订单状态，如果有效则渲染，失效/已过期则重新获取新订单
+ * 校验缓存的订单状态
  */
 async function validateAndRenderCache(cachedData, fetchUrl, isFromDataToken, cacheKey) {
+    // 1. 本地缓存已被标记为已支付：直接弹出支付成功账单，绝不重新请求
+    if (cachedData.isPaid && cachedData.order) {
+        if (cachedData.order_id) {
+            const searchInput = document.getElementById('input-search-key');
+            if (searchInput) searchInput.value = cachedData.order_id;
+        }
+        openOrderModal(cachedData.order);
+        return;
+    }
+
     const loaderEl = document.getElementById('checkout-loader');
     loaderEl.classList.remove('hidden');
 
     try {
         const res = await fetch(`${API_BASE}/check-status?order_id=${encodeURIComponent(cachedData.order_id)}`);
         
-        // 订单在服务端已不存在/过期
+        // 订单在服务端过期/不存在（未支付且被服务器清理）
         if (res.status === 404) {
             if (currentStorage && cacheKey) currentStorage.removeItem(cacheKey);
             await fetchOrder(fetchUrl, isFromDataToken, cacheKey);
@@ -349,18 +372,31 @@ async function validateAndRenderCache(cachedData, fetchUrl, isFromDataToken, cac
             return;
         }
 
-        // 订单已支付成功
+        // 服务端返回已支付成功：将已支付状态持久更新写入缓存（不删除缓存！），弹出成功明细
         if (checkData.success && checkData.paid) {
-            if (currentStorage && cacheKey) currentStorage.removeItem(cacheKey);
+            const paidCache = {
+                isPaid: true,
+                order: checkData.order,
+                order_id: checkData.order.order_id || cachedData.order_id,
+                pay_amount: checkData.order.price || cachedData.pay_amount,
+                project: checkData.order.project || cachedData.project
+            };
+            if (currentStorage && cacheKey) {
+                currentStorage.setItem(cacheKey, JSON.stringify(paidCache));
+            }
+            if (cachedData.order_id) {
+                const searchInput = document.getElementById('input-search-key');
+                if (searchInput) searchInput.value = cachedData.order_id;
+            }
             openOrderModal(checkData.order);
             return;
         }
 
-        // 订单依然有效且未完成支付，正常显示
+        // 订单未支付且仍然有效：继续复用并渲染当前未支付订单，启动轮询
         renderOrder(cachedData, isFromDataToken);
     } catch (e) {
-        // 网络异常时，尝试重新获取最新订单
-        await fetchOrder(fetchUrl, isFromDataToken, cacheKey);
+        // 网络抖动时优先渲染本地缓存订单
+        renderOrder(cachedData, isFromDataToken);
     } finally {
         loaderEl.classList.add('hidden');
     }
@@ -388,7 +424,9 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     if (dataToken) {
-        // 密文模式：使用 localStorage 持久存储
+        // ----------------------------------------------------
+        // 正常商品（密文模式）：localStorage 永久保存
+        // ----------------------------------------------------
         currentStorage = localStorage;
         currentCacheKey = `solpay_token_${dataToken.trim()}`;
         const cachedDataStr = currentStorage.getItem(currentCacheKey);
@@ -397,7 +435,7 @@ window.addEventListener('DOMContentLoaded', () => {
         if (cachedDataStr) {
             try {
                 const cachedData = JSON.parse(cachedDataStr);
-                if (cachedData && cachedData.order_id) {
+                if (cachedData && (cachedData.order_id || cachedData.isPaid)) {
                     validateAndRenderCache(cachedData, fetchUrl, true, currentCacheKey);
                     return;
                 }
@@ -406,10 +444,13 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // 首次打开或缓存被清空时生成
         fetchOrder(fetchUrl, true, currentCacheKey);
     } 
     else if (payParam && !isNaN(parseFloat(payParam)) && parseFloat(payParam) > 0) {
-        // 🚀 核心修复：自定义金额模式使用 sessionStorage，防止用户 F5 刷新页面时订单号和收款地址丢失突变
+        // ----------------------------------------------------
+        // 自定义金额模式：sessionStorage 存储（随标签页/浏览器关闭自毁）
+        // ----------------------------------------------------
         const amountVal = parseFloat(payParam);
         document.getElementById('input-custom-price').value = amountVal;
 
@@ -421,7 +462,8 @@ window.addEventListener('DOMContentLoaded', () => {
         if (cachedDataStr) {
             try {
                 const cachedData = JSON.parse(cachedDataStr);
-                if (cachedData && cachedData.order_id) {
+                // 刷新不重新生成：只要 session 缓存存在就直接复用/显示账单
+                if (cachedData && (cachedData.order_id || cachedData.isPaid)) {
                     validateAndRenderCache(cachedData, fetchUrl, false, currentCacheKey);
                     return;
                 }
@@ -430,6 +472,7 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // 首次输入或者 session 自动清空后打开时生成
         fetchOrder(fetchUrl, false, currentCacheKey);
     } 
     else {
