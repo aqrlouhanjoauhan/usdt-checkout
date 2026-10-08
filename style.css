@@ -501,6 +501,12 @@ a.brand-badge:active {
 
 .btn-confirm-amount:hover { background: var(--brand-primary-hover); }
 
+.payment-display-group {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
 /* 金额展示区域：Flex居中 + 底部基线对齐 + 大字号 */
 .amount-hero {
     background: #FFFFFF;
@@ -630,16 +636,14 @@ a.brand-badge:active {
     justify-content: center;
     background: #F1F5F9;
     border-radius: var(--radius-btn);
-    padding: 14px 20px 16px; /* 底部稍微预留空间给光条 */
-    overflow: hidden;        /* 保证底部光条与外框微圆角完美契合 */
+    padding: 14px 20px 16px;
+    overflow: hidden;
 }
 
-/* 隐藏原本的小球结构（无需修改 HTML） */
 .pulse-dot-wrap {
     display: none !important;
 }
 
-/* 文字块：无论单行多行，绝对水平居中对齐 */
 #sync-text {
     width: 100%;
     font-size: 13.5px;
@@ -651,7 +655,6 @@ a.brand-badge:active {
     overflow-wrap: break-word;
 }
 
-/* 底部发光动态流动条（采用科技感翡翠绿到深蓝渐变平滑流动） */
 .status-sync-box::after {
     content: '';
     position: absolute;
@@ -733,7 +736,6 @@ a.brand-badge:active {
         gap: 15px;
     }
 
-    /* 搜索栏：窄屏下换行并铺满 */
     .search-container {
         flex-wrap: wrap;
         padding: 4px;
@@ -760,7 +762,6 @@ a.brand-badge:active {
         font-size: 42px;
     }
 
-    /* 地址卡片：窄屏下模仿订单查询栏，按钮独占一行并铺满居中 */
     .address-card {
         flex-direction: column;
         align-items: stretch;
