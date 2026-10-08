@@ -13,6 +13,11 @@ let pollTimer = null;
 let toastTimer = null;
 let lastRenderedOrderInfo = null;
 
+// 轮询与并发防护控制变量
+let isRecreatingOrder = false;
+let pollCount = 0;
+let isPageHidden = false;
+
 document.getElementById('current-year').innerText = new Date().getFullYear();
 
 function showToast(text) {
@@ -127,71 +132,116 @@ ${o.url ? t("copy_header_delivery") + o.url : ""}
     });
 }
 
-function handleOrderExpiredAndRecreate() {
-    if (pollTimer) clearInterval(pollTimer);
-    // 服务端确实判定该未付款订单失效时才清除缓存重新生成
-    if (currentCacheKey && currentStorage) {
-        currentStorage.removeItem(currentCacheKey);
-    }
-    
-    if (dataToken) {
-        fetchOrder(`${API_BASE}/?data=${encodeURIComponent(dataToken)}`, true, currentCacheKey);
-    } else if (payParam && !isNaN(parseFloat(payParam)) && parseFloat(payParam) > 0) {
-        const amountVal = parseFloat(payParam);
-        fetchOrder(`${API_BASE}/?price=${encodeURIComponent(amountVal)}`, false, currentCacheKey);
+function stopPolling() {
+    if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
     }
 }
 
+// 订单在服务端过期（满24小时被清理）或不存在时触发安全重建
+function handleOrderExpiredAndRecreate() {
+    if (isRecreatingOrder) return;
+    isRecreatingOrder = true;
+
+    stopPolling();
+    showToast(t("toast_order_expired"));
+
+    if (currentCacheKey && currentStorage) {
+        currentStorage.removeItem(currentCacheKey);
+    }
+
+    const resetLock = () => {
+        isRecreatingOrder = false;
+    };
+
+    if (dataToken) {
+        fetchOrder(`${API_BASE}/?data=${encodeURIComponent(dataToken)}`, true, currentCacheKey).finally(resetLock);
+    } else if (payParam && !isNaN(parseFloat(payParam)) && parseFloat(payParam) > 0) {
+        const amountVal = parseFloat(payParam);
+        fetchOrder(`${API_BASE}/?price=${encodeURIComponent(amountVal)}`, false, currentCacheKey).finally(resetLock);
+    } else {
+        switchToCustomMode();
+        isRecreatingOrder = false;
+    }
+}
+
+// 阶梯式轮询执行器：前30秒每3秒查一次，随后放缓为6秒、10秒
+function scheduleNextPoll(orderId) {
+    if (isPageHidden) return; // 切后台时挂起
+
+    pollCount++;
+    let delayMs = 3000;
+    if (pollCount > 10 && pollCount <= 25) {
+        delayMs = 6000;
+    } else if (pollCount > 25) {
+        delayMs = 10000;
+    }
+
+    pollTimer = setTimeout(() => {
+        runCheckStatus(orderId);
+    }, delayMs);
+}
+
+async function runCheckStatus(orderId) {
+    if (!orderId || isPageHidden) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/check-status?order_id=${encodeURIComponent(orderId)}`);
+        
+        if (res.status === 404) {
+            handleOrderExpiredAndRecreate();
+            return;
+        }
+
+        const data = await res.json();
+        
+        if (data.code === "ERR_ORDER_NOT_FOUND") {
+            handleOrderExpiredAndRecreate();
+            return;
+        }
+
+        if (data.code === "ERR_DIRTY_COIN_DETECTED") {
+            stopPolling();
+            showToast(t("ERR_DIRTY_COIN_DETECTED"));
+            const syncEl = document.getElementById('sync-text');
+            syncEl.innerText = t("ERR_DIRTY_COIN_DETECTED");
+            return;
+        }
+
+        // 支付成功：持久化写入已支付缓存
+        if (data.success && data.paid) {
+            stopPolling();
+
+            if (currentCacheKey && currentStorage) {
+                try {
+                    const paidCache = {
+                        isPaid: true,
+                        order: data.order,
+                        order_id: data.order.order_id || orderId,
+                        pay_amount: data.order.price || globalAmount,
+                        project: data.order.project || currentProject
+                    };
+                    currentStorage.setItem(currentCacheKey, JSON.stringify(paidCache));
+                } catch (e) {}
+            }
+
+            const syncEl = document.getElementById('sync-text');
+            syncEl.setAttribute('data-i18n', 'status_tx_confirmed');
+            syncEl.innerText = t("status_tx_confirmed");
+            openOrderModal(data.order);
+            return;
+        }
+    } catch (e) {}
+
+    // 未支付继续安排下一次轮询
+    scheduleNextPoll(orderId);
+}
+
 function startPolling(orderId) {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(async () => {
-        try {
-            const res = await fetch(`${API_BASE}/check-status?order_id=${encodeURIComponent(orderId)}`);
-            
-            if (res.status === 404) {
-                handleOrderExpiredAndRecreate();
-                return;
-            }
-
-            const data = await res.json();
-            
-            if (data.code === "ERR_ORDER_NOT_FOUND") {
-                handleOrderExpiredAndRecreate();
-                return;
-            }
-
-            if (data.code === "ERR_DIRTY_COIN_DETECTED") {
-                clearInterval(pollTimer);
-                showToast(t("ERR_DIRTY_COIN_DETECTED"));
-                const syncEl = document.getElementById('sync-text');
-                syncEl.innerText = t("ERR_DIRTY_COIN_DETECTED");
-                return;
-            }
-
-            // 支付成功：更新并锁定缓存，绝不删除缓存
-            if (data.success && data.paid) {
-                clearInterval(pollTimer);
-
-                if (currentCacheKey && currentStorage) {
-                    try {
-                        const paidCache = {
-                            isPaid: true,
-                            order: data.order,
-                            order_id: data.order.order_id || orderId,
-                            pay_amount: data.order.price || globalAmount,
-                            project: data.order.project || currentProject
-                        };
-                        currentStorage.setItem(currentCacheKey, JSON.stringify(paidCache));
-                    } catch (e) {}
-                }
-
-                const syncEl = document.getElementById('sync-text');
-                syncEl.setAttribute('data-i18n', 'status_tx_confirmed');
-                syncEl.innerText = t("status_tx_confirmed");
-                openOrderModal(data.order);
-            }
-        } catch {}
-    }, 3000);
+    stopPolling();
+    pollCount = 0;
+    scheduleNextPoll(orderId);
 }
 
 function renderOrder(data, isFromDataToken = false) {
@@ -244,6 +294,7 @@ function renderOrder(data, isFromDataToken = false) {
 }
 
 function switchToCustomMode(errorMsg) {
+    stopPolling();
     document.getElementById('product-title-wrap').classList.add('hidden');
     document.getElementById('payment-display-group').classList.add('hidden');
     document.getElementById('custom-amount-wrap').classList.remove('hidden');
@@ -253,6 +304,7 @@ function switchToCustomMode(errorMsg) {
 }
 
 async function fetchOrder(url, isFromDataToken = false, cacheKey = null) {
+    stopPolling();
     const loaderEl = document.getElementById('checkout-loader');
     loaderEl.classList.remove('hidden');
 
@@ -269,7 +321,6 @@ async function fetchOrder(url, isFromDataToken = false, cacheKey = null) {
             return;
         }
 
-        // 成功生成订单，写入当前对应的存储
         if (cacheKey && currentStorage) {
             try {
                 currentStorage.setItem(cacheKey, JSON.stringify(data));
@@ -296,7 +347,6 @@ function submitCustomAmount() {
         return;
     }
 
-    // 主动输入金额重新生成时，主动清空该金额旧订单
     try {
         sessionStorage.removeItem(`solpay_custom_pay_${val}`);
     } catch (e) {}
@@ -336,11 +386,7 @@ async function searchOrder() {
     }
 }
 
-/**
- * 校验缓存的订单状态
- */
 async function validateAndRenderCache(cachedData, fetchUrl, isFromDataToken, cacheKey) {
-    // 1. 本地缓存已被标记为已支付：直接弹出支付成功账单，绝不重新请求
     if (cachedData.isPaid && cachedData.order) {
         if (cachedData.order_id) {
             const searchInput = document.getElementById('input-search-key');
@@ -356,7 +402,6 @@ async function validateAndRenderCache(cachedData, fetchUrl, isFromDataToken, cac
     try {
         const res = await fetch(`${API_BASE}/check-status?order_id=${encodeURIComponent(cachedData.order_id)}`);
         
-        // 订单在服务端过期/不存在（未支付且被服务器清理）
         if (res.status === 404) {
             if (currentStorage && cacheKey) currentStorage.removeItem(cacheKey);
             await fetchOrder(fetchUrl, isFromDataToken, cacheKey);
@@ -365,14 +410,12 @@ async function validateAndRenderCache(cachedData, fetchUrl, isFromDataToken, cac
 
         const checkData = await res.json();
 
-        // 订单无效或已被清理
         if (checkData.code === "ERR_ORDER_NOT_FOUND" || (checkData.order && checkData.order.status === "EXPIRED")) {
             if (currentStorage && cacheKey) currentStorage.removeItem(cacheKey);
             await fetchOrder(fetchUrl, isFromDataToken, cacheKey);
             return;
         }
 
-        // 服务端返回已支付成功：将已支付状态持久更新写入缓存（不删除缓存！），弹出成功明细
         if (checkData.success && checkData.paid) {
             const paidCache = {
                 isPaid: true,
@@ -392,15 +435,26 @@ async function validateAndRenderCache(cachedData, fetchUrl, isFromDataToken, cac
             return;
         }
 
-        // 订单未支付且仍然有效：继续复用并渲染当前未支付订单，启动轮询
         renderOrder(cachedData, isFromDataToken);
     } catch (e) {
-        // 网络抖动时优先渲染本地缓存订单
         renderOrder(cachedData, isFromDataToken);
     } finally {
         loaderEl.classList.add('hidden');
     }
 }
+
+// 页面可见性监听：切后台休眠，切回前台唤醒
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+        isPageHidden = true;
+        stopPolling();
+    } else {
+        isPageHidden = false;
+        if (currentOrderId) {
+            runCheckStatus(currentOrderId);
+        }
+    }
+});
 
 window.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('input-search-key');
@@ -424,9 +478,6 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     if (dataToken) {
-        // ----------------------------------------------------
-        // 正常商品（密文模式）：localStorage 永久保存
-        // ----------------------------------------------------
         currentStorage = localStorage;
         currentCacheKey = `solpay_token_${dataToken.trim()}`;
         const cachedDataStr = currentStorage.getItem(currentCacheKey);
@@ -444,13 +495,9 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // 首次打开或缓存被清空时生成
         fetchOrder(fetchUrl, true, currentCacheKey);
     } 
     else if (payParam && !isNaN(parseFloat(payParam)) && parseFloat(payParam) > 0) {
-        // ----------------------------------------------------
-        // 自定义金额模式：sessionStorage 存储（随标签页/浏览器关闭自毁）
-        // ----------------------------------------------------
         const amountVal = parseFloat(payParam);
         document.getElementById('input-custom-price').value = amountVal;
 
@@ -462,7 +509,6 @@ window.addEventListener('DOMContentLoaded', () => {
         if (cachedDataStr) {
             try {
                 const cachedData = JSON.parse(cachedDataStr);
-                // 刷新不重新生成：只要 session 缓存存在就直接复用/显示账单
                 if (cachedData && (cachedData.order_id || cachedData.isPaid)) {
                     validateAndRenderCache(cachedData, fetchUrl, false, currentCacheKey);
                     return;
@@ -472,7 +518,6 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // 首次输入或者 session 自动清空后打开时生成
         fetchOrder(fetchUrl, false, currentCacheKey);
     } 
     else {
