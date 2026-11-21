@@ -10,7 +10,7 @@ Your support directly covers server infrastructure, API costs, and fuels further
 
 You can donate directly via our dedicated **USDT on Solana (SPL)** payment page for lightning-fast confirmation and near-zero gas fees:
 
-👉 **[Click Here to Support & Donate (target-url.pages.dev)](https://target-url.pages.dev)**
+👉 **[Click Here to Support & Donate (target-url.pages.dev)](https://usdtspl.pages.dev)**
 
 ---
 
@@ -18,10 +18,10 @@ You can donate directly via our dedicated **USDT on Solana (SPL)** payment page 
 
 Click any of the preset links below to tip directly:
 
-* ☕ **[Tip 2 USDT (A Coffee)](https://target-url.pages.dev/?pay=2)**
-* 🥪 **[Tip 5 USDT (A Quick Lunch)](https://target-url.pages.dev/?pay=5)**
-* 🍕 **[Tip 10 USDT (Super Supporter)](https://target-url.pages.dev/?pay=10)**
-* 🚀 **[Tip 20 USDT (Legendary Sponsor)](https://target-url.pages.dev/?pay=20)**
+* ☕ **[Tip 2 USDT (A Coffee)](https://usdtspl.pages.dev/?pay=2)**
+* 🥪 **[Tip 5 USDT (A Quick Lunch)](https://usdtspl.pages.dev/?pay=5)**
+* 🍕 **[Tip 10 USDT (Super Supporter)](https://usdtspl.pages.dev/?pay=10)**
+* 🚀 **[Tip 20 USDT (Legendary Sponsor)](https://usdtspl.pages.dev/?pay=20)**
 * ✨ Or choose any custom amount directly on the checkout page!
 
 ---
